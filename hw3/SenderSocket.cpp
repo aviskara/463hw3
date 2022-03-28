@@ -79,10 +79,37 @@ int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperti
             printf("[%.3f] --> failed recvfrom with %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, WSAGetLastError());
             return FAILED_SEND;
         }
-        
-
+        break;
     }
 
+    return 0;
+}
+
+int SenderSocket::Close(LinkProperties* _lp)
+{
+    int attempt = 0;
+    while (attempt++ < DEFAULT_MAX_ATTEMPTS)
+    {
+        printf("[%.3f] --> FIN %d (attempt %d of 5, RTO %.3f)\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, 0, attempt, packetRTT);
+
+        int status = 0;
+        // send SYN packet for handshake
+        if ((status = SendFIN(_lp)) != STATUS_OK)
+        {
+            printf("[%.3f] --> failed sendto with %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, WSAGetLastError());
+            return FAILED_SEND;
+        }
+        // recieve packet and parse
+        if ((status = RecvFIN()) != STATUS_OK)
+        {
+            if ((status == TIMEOUT) && (attempt < 3)) {
+                continue;
+            }
+            printf("[%.3f] --> failed recvfrom with %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, WSAGetLastError());
+            return FAILED_SEND;
+        }
+        break;
+    }
     return 0;
 }
 
@@ -94,14 +121,15 @@ int SenderSocket::SendSYN(LinkProperties* _lp)
     hdr->lp.speed = _lp->speed;
     hdr->lp.pLoss[FORWARD_PATH] = _lp->pLoss[FORWARD_PATH];
     hdr->lp.pLoss[RETURN_PATH] = _lp->pLoss[RETURN_PATH];
-    hdr->lp.bufferSize = _lp->bufferSize;
+    hdr->lp.bufferSize = 100;
     hdr->sdh.flags.SYN = 1;
     hdr->sdh.seq = 0;
 
-    printf("RTT = %f Speed = %f Forward Loss = %f Backwards Loss = %f Buffer = %u\n", 
-        hdr->lp.RTT, hdr->lp.speed, hdr->lp.pLoss[FORWARD_PATH], hdr->lp.pLoss[RETURN_PATH], hdr->lp.bufferSize);
+    //printf("RTT = %f Speed = %f Forward Loss = %f Backwards Loss = %f Buffer = %u\n", 
+        //hdr->lp.RTT, hdr->lp.speed, hdr->lp.pLoss[FORWARD_PATH], hdr->lp.pLoss[RETURN_PATH], hdr->lp.bufferSize);
 
     rttTimer = clock();
+    
     // send the data
     if (sendto(sock, (char*)hdr, sizeof(SenderSynHeader), 0, (struct sockaddr*)&remote, sizeof(remote)) == SOCKET_ERROR)
     {
@@ -124,7 +152,86 @@ int SenderSocket::RecvSYN()
 
     struct sockaddr_in response;
     int responseAddrSize = sizeof(response);
-    int responseSize = 0;
+    
+
+    fd_set fd;
+    FD_ZERO(&fd);
+    FD_SET(sock, &fd);
+    int available = select(0, &fd, NULL, NULL, &timeout);
+
+    //std::cout << "start\n";
+    if (available > 0)
+    {
+        if ((responseSize = recvfrom(sock, responseBuf, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
+        {
+            //std::cout << "less than 0\n";
+            return FAILED_RECV;
+        }
+        //std::cout << "available\n";
+
+        struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
+
+        if ((resp->flags.SYN == 1) && (resp->flags.ACK == 1))
+        {
+            packetRTT = 3* ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
+            printf("[%.3f] <-- SYN-ACK %d window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd, packetRTT);
+            transferDuration = (double)clock() / CLOCKS_PER_SEC;
+            return STATUS_OK;
+        }
+    }
+    else if (available == 0)
+    {
+        //std::cout << "timeout\n";
+        return TIMEOUT;
+    }
+    else
+    {
+        //std::cout << "else\n";
+        return -1;
+    }
+    //std::cout << "outside\n";
+    return -1;
+}
+
+int SenderSocket::SendFIN(LinkProperties* _lp)
+{
+    // create header to send
+    struct SenderSynHeader* hdr = new SenderSynHeader();
+    hdr->lp.RTT = packetRTT;
+    hdr->lp.speed = _lp->speed;
+    hdr->lp.pLoss[FORWARD_PATH] = _lp->pLoss[FORWARD_PATH];
+    hdr->lp.pLoss[RETURN_PATH] = _lp->pLoss[RETURN_PATH];
+    hdr->lp.bufferSize = 100;
+    hdr->sdh.flags.FIN = 1;
+    hdr->sdh.seq = 0;
+
+    //printf("RTT = %f Speed = %f Forward Loss = %f Backwards Loss = %f Buffer = %u\n", 
+        //hdr->lp.RTT, hdr->lp.speed, hdr->lp.pLoss[FORWARD_PATH], hdr->lp.pLoss[RETURN_PATH], hdr->lp.bufferSize);
+
+    transferDuration = ((double)clock() / CLOCKS_PER_SEC) - transferDuration;
+    // send the data
+    if (sendto(sock, (char*)hdr, sizeof(SenderSynHeader), 0, (struct sockaddr*)&remote, sizeof(remote)) == SOCKET_ERROR)
+    {
+        return FAILED_SEND;
+    }
+    return 0;
+}
+
+int SenderSocket::RecvFIN()
+{
+    timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    clock_t t = clock();
+
+    // create buffer for incoming data
+    char* responseBuf = new char[sizeof(SenderSynHeader)];
+    memset(responseBuf, 0, sizeof(SenderSynHeader));
+
+    struct sockaddr_in response;
+    int responseAddrSize = sizeof(response);
+
 
     fd_set fd;
     FD_ZERO(&fd);
@@ -139,25 +246,26 @@ int SenderSocket::RecvSYN()
             std::cout << "less than 0\n";
             return FAILED_RECV;
         }
-        std::cout << "available\n";
+        //std::cout << "available\n";
 
         struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
 
-        if ((resp->flags.SYN == 1) && (resp->flags.ACK == 1))
+        if ((resp->flags.ACK == 1) && (resp->flags.FIN == 1))
         {
-            printf("[%.3f] <-- SYN-ACK %D window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->recvWnd, ((double)clock() - rttTimer) / CLOCKS_PER_SEC);
+            packetRTT = 3 * ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
+            printf("[%.3f] <-- FIN-ACK %d window %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd);
             return STATUS_OK;
         }
     }
     else if (available == 0)
     {
-        std::cout << "timeout\n";
+        //std::cout << "timeout\n";
         return TIMEOUT;
     }
     else
     {
-        std::cout << "else\n";
+        //std::cout << "else\n";
         return -1;
     }
-    std::cout << "outside\n";
+    return -1;
 }

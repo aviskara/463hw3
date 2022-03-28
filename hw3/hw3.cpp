@@ -39,7 +39,7 @@ int main(int argc, char **argv)
     SenderSocket ss;
     LinkProperties lp;
     lp.RTT = rtt;
-    lp.speed = bottleneckSpeed;
+    lp.speed = bottleneckSpeed * 1e6;
     lp.pLoss[FORWARD_PATH] = forwardLoss;
     lp.pLoss[RETURN_PATH] = returnLoss;
     lp.bufferSize = dwordBufSize + DEFAULT_MAX_ATTEMPTS;
@@ -48,5 +48,14 @@ int main(int argc, char **argv)
         printf("Main:\t connect failed with status %d\n", status);
         return 0;
     }
-}
+    clock_t transferStart = clock();
+    printf("Main:\t connected to %s in %.3f sec, pkt size %d bytes\n", targetHost, ss.packetRTT / 3, ss.responseSize);
 
+    
+
+    
+    if ((status = ss.Close(&lp)) != STATUS_OK) {
+
+    }
+    printf("transfer finished in %.3f seconds\n", ss.transferDuration);
+}

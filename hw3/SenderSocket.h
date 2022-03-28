@@ -67,25 +67,27 @@ public:
 class SenderSocket {
 	int SendSYN(LinkProperties* _lp);
 	int RecvSYN();
-	int SendFIN();
+	int SendFIN(LinkProperties* _lp);
 	int RecvFIN();
 public:
 	char* host;
 	int portNo;
 	int senderWindow;
-	float rtt;
+	float packetRTT;
 	float forwardLoss;
 	float backwardLoss;
 	float linkSpeed;
 	UINT64 bufSize;
+	int responseSize;
 
 	SOCKET sock;
 	struct sockaddr_in remote;
 
 	clock_t startTimer;
 	clock_t rttTimer;
+	float transferDuration;
 
 	int Open(char* _host, int _portNo, int _senderWindow, LinkProperties* _lp);
 	int Send();
-	int Close();
+	int Close(LinkProperties* _lp);
 };
