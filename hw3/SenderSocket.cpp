@@ -69,7 +69,7 @@ int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperti
     int attempt = 0;
     while (attempt++ < SYN_MAX_ATTEMPTS)
     {
-        printf("[%.3f] --> SYN %d (attempt %d of 3, RTO 1.000) to %s\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, 0, attempt, _host);
+        //printf("[%.3f] --> SYN %d (attempt %d of 3, RTO 1.000) to %s\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, 0, attempt, _host);
         
         int status = 0;
         // send SYN packet for handshake
@@ -119,7 +119,11 @@ int SenderSocket::Send(char* data, int size)
         {
             continue;
         }
-        return status;
+        else
+        {
+            continue;
+        }
+        
     }
 }
 
@@ -132,7 +136,7 @@ int SenderSocket::Close(LinkProperties* _lp)
     int attempt = 0;
     while (attempt++ < DEFAULT_MAX_ATTEMPTS)
     {
-        printf("[%.3f] --> FIN %d (attempt %d of 5, RTO %.3f)\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, 0, attempt, packetRTT);
+        //printf("[%.3f] --> FIN %d (attempt %d of 5, RTO %.3f)\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, 0, attempt, packetRTT);
 
         int status = 0;
         // send SYN packet for handshake
@@ -216,7 +220,8 @@ int SenderSocket::RecvSYN()
         if ((resp->flags.SYN == 1) && (resp->flags.ACK == 1))
         {
             rto = 3* ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
-            printf("[%.3f] <-- SYN-ACK %d window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd, rto);
+            est = rto / 3;
+            //printf("[%.3f] <-- SYN-ACK %d window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd, rto);
             transferDuration = (double)clock() / CLOCKS_PER_SEC;
             delete [] responseBuf;
             return STATUS_OK;
@@ -299,6 +304,7 @@ int SenderSocket::RecvFIN()
         if ((resp->flags.ACK == 1) && (resp->flags.FIN == 1))
         {
             packetRTT = 3 * ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
+            //std::cout << resp->recvWnd << std::endl;
             printf("[%.3f] <-- FIN-ACK %d window %X\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd);
             rto = packetRTT;
             return STATUS_OK;
@@ -398,13 +404,13 @@ void SenderSocket::Status(LPVOID _param)
     while (WaitForSingleObject(s->complete, 2000) == WAIT_TIMEOUT)
     {
         cur = clock();
+        s->speed = ((double)(s->base - prevSize) * 8 * (MAX_PKT_SIZE - sizeof(SenderDataHeader)) / ((double)1e6*2));
 
         printf("[%3.0f] B %6d (%3.1f) N %6d T %d F %d W %d S %.3f Mbps RTT %.3f\n",
             (double)(cur - start) / CLOCKS_PER_SEC, s->base,
             s->base * MAX_PKT_SIZE / 1e6,
             s->nextSeq, s->timoutCount, s->rtxCount, 1,
-            ((double)(s->base - prevSize) * 8 * (MAX_PKT_SIZE - sizeof(SenderDataHeader)) / (double)1e6 * 2),
-            s->est);
+            s->speed , s->est);
 
         prevSize = s->base;
     }

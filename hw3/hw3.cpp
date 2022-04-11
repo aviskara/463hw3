@@ -77,5 +77,6 @@ int main(int argc, char **argv)
     DWORD check = cs.CRC32((unsigned char *)charBuf, byteBufferSize);
     //std::cout << check << std::endl;
 
-    printf("transfer finished in %.3f seconds, speed %.2 Kbps, checksum %X\n", ss.transferDuration, ss.speed, check);
+    printf("Main:\t transfer finished in %.3f seconds, speed %.2f Kbps, checksum %X\n", ss.transferDuration, (dwordBufSize * 32)/(double)(1000*ss.transferDuration), check);
+    printf("Main:\t estRTT %.3f, ideal rate %.2f Kbps\n", ss.est, 8 * (MAX_PKT_SIZE - sizeof(SenderDataHeader)) / (ss.est * 1000));
 }

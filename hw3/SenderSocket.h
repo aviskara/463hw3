@@ -113,6 +113,7 @@ public:
 	double rto;
 
 	int base = 0;
+	int prevSize = 0;
 	int nextSeq = 1;
 	int lastReleased;
 	int timoutCount;
