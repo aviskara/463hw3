@@ -99,6 +99,7 @@ public:
 	float linkSpeed;
 	UINT64 bufSize;
 	int responseSize;
+	float speed;
 
 	SOCKET sock;
 	struct sockaddr_in remote;

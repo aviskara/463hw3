@@ -249,7 +249,7 @@ int SenderSocket::SendFIN(LinkProperties* _lp)
     hdr->lp.pLoss[RETURN_PATH] = _lp->pLoss[RETURN_PATH];
     hdr->lp.bufferSize = 100;
     hdr->sdh.flags.FIN = 1;
-    hdr->sdh.seq = 0;
+    hdr->sdh.seq = base;
 
     //printf("RTT = %f Speed = %f Forward Loss = %f Backwards Loss = %f Buffer = %u\n", 
         //hdr->lp.RTT, hdr->lp.speed, hdr->lp.pLoss[FORWARD_PATH], hdr->lp.pLoss[RETURN_PATH], hdr->lp.bufferSize);
@@ -299,7 +299,7 @@ int SenderSocket::RecvFIN()
         if ((resp->flags.ACK == 1) && (resp->flags.FIN == 1))
         {
             packetRTT = 3 * ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
-            printf("[%.3f] <-- FIN-ACK %d window %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd);
+            printf("[%.3f] <-- FIN-ACK %d window %X\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd);
             rto = packetRTT;
             return STATUS_OK;
         }
@@ -404,7 +404,7 @@ void SenderSocket::Status(LPVOID _param)
             s->base * MAX_PKT_SIZE / 1e6,
             s->nextSeq, s->timoutCount, s->rtxCount, 1,
             ((double)(s->base - prevSize) * 8 * (MAX_PKT_SIZE - sizeof(SenderDataHeader)) / (double)1e6 * 2),
-            s->rto);
+            s->est);
 
         prevSize = s->base;
     }

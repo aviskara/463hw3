@@ -3,6 +3,7 @@
 
 #include "pch.h"
 #include "SenderSocket.h"
+#include "checksun.h"
 
 int main(int argc, char **argv)
 {
@@ -71,5 +72,10 @@ int main(int argc, char **argv)
     if ((status = ss.Close(&lp)) != STATUS_OK) {
 
     }
-    printf("transfer finished in %.3f seconds\n", ss.transferDuration);
+
+    Checksum cs;
+    DWORD check = cs.CRC32((unsigned char *)charBuf, byteBufferSize);
+    //std::cout << check << std::endl;
+
+    printf("transfer finished in %.3f seconds, speed %.2 Kbps, checksum %X\n", ss.transferDuration, ss.speed, check);
 }
