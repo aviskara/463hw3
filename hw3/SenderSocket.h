@@ -61,6 +61,21 @@ public:
 	SenderDataHeader sdh;
 	LinkProperties lp;
 };
+
+class SenderPacket {
+public:
+	SenderDataHeader sdh;
+	char data[MAX_PKT_SIZE];
+};
+
+class Packet {
+public:
+	int type; // SYN, FIN, data
+	int size; // bytes in packet data
+	clock_t txTime; // transmission time
+	SenderDataHeader sdh;
+	char pkt[MAX_PKT_SIZE]; // packet with header
+};
 #pragma pop
 
 
@@ -69,6 +84,11 @@ class SenderSocket {
 	int RecvSYN();
 	int SendFIN(LinkProperties* _lp);
 	int RecvFIN();
+	int RecvACK();
+
+	float CalculateRTO(float _newTime);
+	float CalculateEstRTT(float _newTime);
+	float CalculateDevRTT(float _newTime);
 public:
 	char* host;
 	int portNo;
@@ -87,7 +107,29 @@ public:
 	clock_t rttTimer;
 	float transferDuration;
 
+	float est = 0;
+	float dev = 0;
+	double rto;
+
+	int base = 0;
+	int nextSeq = 1;
+	int lastReleased;
+	int timoutCount;
+	int rtxCount;
+	Packet* pending_pkts = NULL;
+
+	HANDLE workerThread;
+	HANDLE statThread;
+
+	HANDLE eventQuit;
+	HANDLE empty;
+	HANDLE full;
+	HANDLE complete;
+	HANDLE socketReceiveReady;
+
 	int Open(char* _host, int _portNo, int _senderWindow, LinkProperties* _lp);
-	int Send();
+	int Send(char *data, int size);
 	int Close(LinkProperties* _lp);
+
+	static void Status(LPVOID _param);
 };

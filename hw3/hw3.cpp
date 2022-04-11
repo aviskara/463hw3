@@ -49,9 +49,23 @@ int main(int argc, char **argv)
         return 0;
     }
     clock_t transferStart = clock();
-    printf("Main:\t connected to %s in %.3f sec, pkt size %d bytes\n", targetHost, ss.packetRTT / 3, ss.responseSize);
+    printf("Main:\t connected to %s in %.3f sec, pkt size %d bytes\n", targetHost, ss.rto / 3, ss.responseSize);
 
-    
+    char* charBuf = (char*)dwordBuf;
+    UINT64 byteBufferSize = dwordBufSize << 2;
+
+    UINT64 off = 0;
+    while (off < byteBufferSize)
+    {
+        int bytes = min(byteBufferSize - off, MAX_PKT_SIZE - sizeof(SenderDataHeader));
+
+        if ((status = ss.Send(charBuf + off, bytes)) != STATUS_OK)
+        {
+            printf("Main:\t send failed with status %d\n", status);
+            return 0;
+        }
+        off += bytes;
+    }
 
     
     if ((status = ss.Close(&lp)) != STATUS_OK) {
