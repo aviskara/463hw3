@@ -35,6 +35,8 @@ int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperti
 
     // create handles and semaphores necessary for processing
     eventQuit = CreateEvent(NULL, true, false, NULL);
+    waitClose = CreateEvent(NULL, true, false, NULL);
+    waitSend = CreateEvent(NULL, true, false, NULL);
     socketReceiveReady = CreateEvent(NULL, false, false, NULL);
     complete = CreateEvent(NULL, true, false, NULL);
     empty = CreateSemaphore(NULL, 0, senderWindow, NULL);
@@ -138,6 +140,7 @@ int SenderSocket::Send(char* data, int size)
     p->sdh.seq = nextSeq;
     p->type = DATA_TYPE;
     p->size = sizeof(SenderDataHeader) + size;
+    p->txTime = clock();
     memcpy(p->pkt, data, size);
     nextSeq++;
     ReleaseSemaphore(full, 1, NULL);
@@ -146,7 +149,9 @@ int SenderSocket::Send(char* data, int size)
 
 int SenderSocket::Close(LinkProperties* _lp)
 {
+    WaitForSingleObject(waitClose, INFINITE);
     SetEvent(eventQuit);
+
     WaitForSingleObject(workerThread, INFINITE);
     CloseHandle(workerThread);
 
@@ -214,8 +219,8 @@ int SenderSocket::RecvSYN()
     clock_t t = clock();
 
     // create buffer for incoming data
-    char* responseBuf = new char[sizeof(SenderSynHeader)];
-    memset(responseBuf, 0, sizeof(SenderSynHeader));
+   /* char* responseBuf = new char[sizeof(SenderSynHeader)];
+    memset(responseBuf, 0, sizeof(SenderSynHeader));*/
 
     struct sockaddr_in response;
     int responseAddrSize = sizeof(response);
@@ -226,27 +231,31 @@ int SenderSocket::RecvSYN()
     FD_SET(sock, &fd);
     int available = select(0, &fd, NULL, NULL, &timeout);
 
+    ReceiverHeader resp ;
+
     //std::cout << "start\n";
     if (available > 0)
     {
-        if ((responseSize = recvfrom(sock, responseBuf, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
+        if ((responseSize = recvfrom(sock, (char *)&resp, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
         {
             //std::cout << "less than 0\n";
             return FAILED_RECV;
         }
         //std::cout << "available\n";
 
-        struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
+        
 
-        if ((resp->flags.SYN == 1) && (resp->flags.ACK == 1))
+        if ((resp.flags.SYN == 1) && (resp.flags.ACK == 1))
         {
             rto = 3* ((double)clock() - rttTimer) / CLOCKS_PER_SEC;
             est = rto / 3;
             //printf("[%.3f] <-- SYN-ACK %d window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd, rto);
             transferDuration = (double)clock() / CLOCKS_PER_SEC;
-            delete [] responseBuf;
+            //delete [] responseBuf;
 
-            lastReleased = min(senderWindow, resp->recvWnd);
+            lastReleased = min(senderWindow, resp.recvWnd);
+            printf("opening senderWIn %d  resp win %d\n", senderWindow, resp.recvWnd);
+            //system("pause");
             ReleaseSemaphore(empty, lastReleased, NULL);
             mutex = CreateMutex(NULL, 0, NULL);
 
@@ -256,17 +265,17 @@ int SenderSocket::RecvSYN()
     else if (available == 0)
     {
         //std::cout << "timeout\n";
-        delete responseBuf;
+        //delete responseBuf;
         return TIMEOUT;
     }
     else
     {
         //std::cout << "else\n";
-        delete [] responseBuf;
+        //delete [] responseBuf;
         return -1;
     }
     //std::cout << "outside\n";
-    delete [] responseBuf;
+    //delete [] responseBuf;
     return -1;
 }
 
@@ -372,7 +381,7 @@ int SenderSocket::RecvACK()
     struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
 
     int y = resp->ackSeq;
-    printf("<-- RECV BASE: %d, NextTo Send %d, ACK %d\n", base, nextToSend, y);
+    //printf("<-- RECV BASE: %d, NextTo Send %d, ACK %d  ", base, nextToSend, y);
     if (base != resp->ackSeq)
     {
         //printf("base = %d \tgot ackSeq %d \t next to send %d\n", base, y, nextToSend);
@@ -380,28 +389,38 @@ int SenderSocket::RecvACK()
     
     if (y > base)
     {
+        WaitForSingleObject(mutex, INFINITE);
         if (dupCount == 0)
         {
-            double tempRTT = (clock() - (double)pending_pkts[(y - 1) % senderWindow].txTime) / CLOCKS_PER_SEC;
-            rto = CalculateRTO(tempRTT);
+            double tempRTT = (clock() - (double)pending_pkts[(base) % senderWindow].txTime) / CLOCKS_PER_SEC;
+            //printf("packetRTT %f\n", tempRTT);
+            //if (tempRTT < (rto * 10)) {
+                rto = CalculateRTO(tempRTT);
+            //}
+            
         }
-        WaitForSingleObject(mutex, INFINITE);
+        ResetEvent(waitSend);
         int releaseAmount = y - base;
         base = y;
         dupCount = 0;
         ReleaseMutex(mutex);
 
-        if (base != nextToSend)
+        /*if (base != nextToSend)
         {
             pending_pkts[base % senderWindow].txTime = clock();
-        }
+        }*/
         WaitForSingleObject(mutex, INFINITE);
         //printf("release amount %d\n", releaseAmount);
         //ReleaseSemaphore(empty, releaseAmount, NULL);
         
         int effectiveWindow = min(senderWindow, resp->recvWnd);
         int newReleased = base + effectiveWindow - lastReleased;
-        
+        /*if (newReleased < 0) {
+            newReleased = 0;
+        }*/
+
+        //printf("Releasing %d base %d effectiveWin %d LastReleased %d\n", newReleased, base, effectiveWindow, lastReleased);
+
         ReleaseSemaphore(empty, newReleased, NULL);
         lastReleased += newReleased;
 
@@ -409,10 +428,13 @@ int SenderSocket::RecvACK()
         
     }
     else if (y == base) {
+        WaitForSingleObject(mutex, INFINITE);
         dupCount++;
+        SetEvent(waitSend);
+        ReleaseMutex(mutex);
         if (dupCount == 3) {
             pending_pkts[base % senderWindow].txTime = clock();
-            printf("--> RTX BASE: %d, NextTo Send %d\n", base, nextToSend);
+            //printf("--> RTX BASE: %d, NextTo Send %d\n", base, nextToSend);
             sendto(sock, (char*)&(pending_pkts[base % senderWindow].sdh), pending_pkts[base % senderWindow].size,
                 0, (sockaddr*)&(remote), sizeof(remote));
             WaitForSingleObject(mutex, INFINITE);
@@ -494,13 +516,17 @@ void SenderSocket::WorkerRun(LPVOID _param)
     {
         if (s->base < s->nextToSend)
         {
-            s->timeout = ( s->rto) * 3000;
+            s->timeout = ( s->rto) * 10000;
+            //printf("timeout %f\n", s->timeout);
+            ResetEvent(s->waitClose);
         }
         else
         {
             s->timeout = INFINITE;
+            //printf("done\n");
+            SetEvent(s->waitClose);
         }
-
+        //printf("timeout %f\n", s->timeout);
         int ret = WaitForMultipleObjects(3, events, false, s->timeout);
         switch (ret) 
         {
@@ -508,7 +534,7 @@ void SenderSocket::WorkerRun(LPVOID _param)
         {
             
             s->timoutCount++;
-            printf("--> TIMEOUT BASE: %d, NextTo Send %d\n", s->base, s->nextToSend);
+            //printf("--> TIMEOUT BASE: %d, NextTo Send %d timeout %f\n", s->base, s->nextToSend, s->timeout);
             sendto(s->sock, (char*)&(s->pending_pkts[s->base % s->senderWindow].sdh), s->pending_pkts[s->base % s->senderWindow].size,
                 0, (sockaddr*)&(s->remote), sizeof(s->remote));
 
@@ -523,12 +549,14 @@ void SenderSocket::WorkerRun(LPVOID _param)
         }
         case 1:
         {
-            printf("--> SEND BASE: %d, NextTo Send %d\n", s->base, s->nextToSend);
+            
+            //printf("--> SEND BASE: %d, NextTo Send %d timeout %f\n", s->base, s->nextToSend, s->timeout);
             sendto(s->sock, (char*)&(s->pending_pkts[s->nextToSend % s->senderWindow].sdh), s->pending_pkts[s->nextToSend % s->senderWindow].size,
                 0, (sockaddr*)&(s->remote), sizeof(s->remote));
             //printf("sent %d\n", s->nextToSend);
             s->pending_pkts[s->base % s->senderWindow].txTime = clock();
             WaitForSingleObject(s->mutex, INFINITE);
+           
             s->nextToSend++;
             ReleaseMutex(s->mutex);
             break;
@@ -536,6 +564,7 @@ void SenderSocket::WorkerRun(LPVOID _param)
         case 2:
         {
             lastPkt = true;
+            //printf("completed base = %d, next %d", s->base, s->nextToSend);
             break;
         }
         default:
