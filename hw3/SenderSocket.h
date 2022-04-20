@@ -22,6 +22,10 @@
 #define SYN_MAX_ATTEMPTS 3
 #define DEFAULT_MAX_ATTEMPTS 5
 
+#define SYN_TYPE 0
+#define FIN_TYPE 1
+#define DATA_TYPE 2
+
 #pragma pack(push, 1)
 class LinkProperties {
 public:
@@ -113,15 +117,20 @@ public:
 	double rto;
 
 	int base = 0;
-	int prevSize = 0;
-	int nextSeq = 1;
+	int nextPkt = 0;
+	int nextSeq = 0;
+	int nextToSend = 0;
+	int slot;
 	int lastReleased;
+	double timeout;
 	int timoutCount;
 	int rtxCount;
+	int dupCount = 0;
 	Packet* pending_pkts = NULL;
 
 	HANDLE workerThread;
 	HANDLE statThread;
+	HANDLE mutex;
 
 	HANDLE eventQuit;
 	HANDLE empty;
@@ -129,9 +138,12 @@ public:
 	HANDLE complete;
 	HANDLE socketReceiveReady;
 
+	~SenderSocket();
+
 	int Open(char* _host, int _portNo, int _senderWindow, LinkProperties* _lp);
 	int Send(char *data, int size);
 	int Close(LinkProperties* _lp);
 
 	static void Status(LPVOID _param);
+	static void WorkerRun(LPVOID _param);
 };

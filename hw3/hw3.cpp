@@ -44,6 +44,7 @@ int main(int argc, char **argv)
     lp.pLoss[FORWARD_PATH] = forwardLoss;
     lp.pLoss[RETURN_PATH] = returnLoss;
     lp.bufferSize = dwordBufSize + DEFAULT_MAX_ATTEMPTS;
+    ss.senderWindow = senderWindow;
     if ((status = ss.Open(targetHost, MAGIC_PORT, senderWindow, &lp)) != STATUS_OK)
     {
         printf("Main:\t connect failed with status %d\n", status);

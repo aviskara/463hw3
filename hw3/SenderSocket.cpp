@@ -1,17 +1,46 @@
 #include "pch.h"
 #include "SenderSocket.h"
 
+SenderSocket::~SenderSocket()
+{
+    DWORD workerStatus;
+    GetExitCodeThread(workerThread, &workerStatus);
+
+    if (workerStatus == STILL_ACTIVE)
+    {
+        SetEvent(eventQuit);
+        WaitForSingleObject(workerThread, INFINITE);
+        CloseHandle(workerThread);
+    }
+
+    DWORD statStatus;
+    GetExitCodeThread(statThread, &statStatus);
+    if (statStatus == STILL_ACTIVE)
+    {
+        SetEvent(complete);
+        WaitForSingleObject(statThread, INFINITE);
+        CloseHandle(statThread);
+    }
+
+    if (pending_pkts != NULL)
+    {
+        delete pending_pkts;
+        pending_pkts = NULL;
+    }
+}
+
 int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperties *_lp)
 {
     startTimer = clock();
 
     // create handles and semaphores necessary for processing
-    eventQuit = CreateEvent(NULL, false, false, NULL);
+    eventQuit = CreateEvent(NULL, true, false, NULL);
     socketReceiveReady = CreateEvent(NULL, false, false, NULL);
     complete = CreateEvent(NULL, true, false, NULL);
-
     empty = CreateSemaphore(NULL, 0, senderWindow, NULL);
     full = CreateSemaphore(NULL, 0, senderWindow, NULL);
+
+    pending_pkts = new Packet[_senderWindow];
 
     // start wsa to bind to localhost
     WSADATA wsaData;
@@ -88,7 +117,10 @@ int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperti
             return FAILED_SEND;
         }
 
+        
+
         statThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&Status, this, 0, NULL);
+        workerThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&WorkerRun, this, 0, NULL);
 
         break;
     }
@@ -98,37 +130,26 @@ int SenderSocket::Open(char* _host, int _portNo, int _senderWindow, LinkProperti
 
 int SenderSocket::Send(char* data, int size)
 {
-    while (rtxCount < DEFAULT_MAX_ATTEMPTS)
-    {
-        struct SenderPacket* pkt = new SenderPacket();
-        pkt->sdh.seq = base;
-        memcpy(pkt->data, data, size);
+    HANDLE arr[] = { eventQuit, empty };
+    WaitForMultipleObjects(2, arr, false, INFINITE);
 
-        rttTimer = clock();
-
-        int status = 0;
-        if (sendto(sock, (char*)pkt, sizeof(SenderDataHeader) + size, 0, (struct sockaddr*)&remote, sizeof(remote)) == SOCKET_ERROR)
-        {
-            return FAILED_SEND;
-        }
-        if ((status = RecvACK()) == STATUS_OK)
-        {
-            return STATUS_OK;
-        }
-        else if (status == TIMEOUT)
-        {
-            continue;
-        }
-        else
-        {
-            continue;
-        }
-        
-    }
+    slot = nextSeq % senderWindow;
+    Packet* p = pending_pkts + slot;
+    p->sdh.seq = nextSeq;
+    p->type = DATA_TYPE;
+    p->size = sizeof(SenderDataHeader) + size;
+    memcpy(p->pkt, data, size);
+    nextSeq++;
+    ReleaseSemaphore(full, 1, NULL);
+    return 0;
 }
 
 int SenderSocket::Close(LinkProperties* _lp)
 {
+    SetEvent(eventQuit);
+    WaitForSingleObject(workerThread, INFINITE);
+    CloseHandle(workerThread);
+
     SetEvent(complete);
     WaitForSingleObject(statThread, INFINITE);
     CloseHandle(statThread);
@@ -224,6 +245,11 @@ int SenderSocket::RecvSYN()
             //printf("[%.3f] <-- SYN-ACK %d window %d; setting initial RTO to %.3f\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, resp->ackSeq, resp->recvWnd, rto);
             transferDuration = (double)clock() / CLOCKS_PER_SEC;
             delete [] responseBuf;
+
+            lastReleased = min(senderWindow, resp->recvWnd);
+            ReleaseSemaphore(empty, lastReleased, NULL);
+            mutex = CreateMutex(NULL, 0, NULL);
+
             return STATUS_OK;
         }
     }
@@ -294,7 +320,7 @@ int SenderSocket::RecvFIN()
     {
         if ((responseSize = recvfrom(sock, responseBuf, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
         {
-            std::cout << "less than 0\n";
+            //std::cout << "less than 0\n";
             return FAILED_RECV;
         }
         //std::cout << "available\n";
@@ -331,45 +357,70 @@ int SenderSocket::RecvACK()
 
     
 
-    fd_set fd;
-    FD_ZERO(&fd);
-    FD_SET(sock, &fd);
-    int available = select(0, &fd, NULL, NULL, &timeout);
+    char* responseBuf = new char[sizeof(SenderSynHeader)];
+    memset(responseBuf, 0, sizeof(SenderSynHeader));
 
-    if (available > 0)
+    struct sockaddr_in response;
+    int responseAddrSize = sizeof(response);
+
+    if ((responseSize = recvfrom(sock, responseBuf, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
     {
-        // create buffer for incoming data
-        char* responseBuf = new char[sizeof(SenderSynHeader)];
-        memset(responseBuf, 0, sizeof(SenderSynHeader));
-
-        struct sockaddr_in response;
-        int responseAddrSize = sizeof(response);
-
-        if ((responseSize = recvfrom(sock, responseBuf, sizeof(SenderSynHeader), 0, (struct sockaddr*)&response, &responseAddrSize)) < 0)
-        {
-            delete [] responseBuf;
-            return FAILED_RECV;
-        }
-
-        struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
-
-        float packetTimer = (clock() - rttTimer) / (double)CLOCKS_PER_SEC;
-        rto = CalculateRTO(packetTimer);
-
-        if (resp->ackSeq == (base + 1))
-        {
-            nextSeq++;
-            base += 1;
-            return STATUS_OK;
-        }
-        return -1;
-    }
-    else {
-        timoutCount++;
-        return TIMEOUT;
+        delete[] responseBuf;
+        return FAILED_RECV;
     }
 
+    struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
 
+    int y = resp->ackSeq;
+    printf("<-- RECV BASE: %d, NextTo Send %d, ACK %d\n", base, nextToSend, y);
+    if (base != resp->ackSeq)
+    {
+        //printf("base = %d \tgot ackSeq %d \t next to send %d\n", base, y, nextToSend);
+    }
+    
+    if (y > base)
+    {
+        if (dupCount == 0)
+        {
+            double tempRTT = (clock() - (double)pending_pkts[(y - 1) % senderWindow].txTime) / CLOCKS_PER_SEC;
+            rto = CalculateRTO(tempRTT);
+        }
+        WaitForSingleObject(mutex, INFINITE);
+        int releaseAmount = y - base;
+        base = y;
+        dupCount = 0;
+        ReleaseMutex(mutex);
+
+        if (base != nextToSend)
+        {
+            pending_pkts[base % senderWindow].txTime = clock();
+        }
+        WaitForSingleObject(mutex, INFINITE);
+        //printf("release amount %d\n", releaseAmount);
+        //ReleaseSemaphore(empty, releaseAmount, NULL);
+        
+        int effectiveWindow = min(senderWindow, resp->recvWnd);
+        int newReleased = base + effectiveWindow - lastReleased;
+        
+        ReleaseSemaphore(empty, newReleased, NULL);
+        lastReleased += newReleased;
+
+        ReleaseMutex(mutex);
+        
+    }
+    else if (y == base) {
+        dupCount++;
+        if (dupCount >= 3) {
+            pending_pkts[base % senderWindow].txTime = clock();
+            printf("--> RTX BASE: %d, NextTo Send %d\n", base, nextToSend);
+            sendto(sock, (char*)&(pending_pkts[base % senderWindow].sdh), pending_pkts[base % senderWindow].size,
+                0, (sockaddr*)&(remote), sizeof(remote));
+            WaitForSingleObject(mutex, INFINITE);
+            rtxCount++;
+            dupCount = 0;
+            ReleaseMutex(mutex);
+        }
+    }
 }
 
 float SenderSocket::CalculateRTO(float _newTime)
@@ -398,7 +449,6 @@ void SenderSocket::Status(LPVOID _param)
 
     clock_t start = clock();
     clock_t cur = 0;
-
     int prevSize = 0;
 
     while (WaitForSingleObject(s->complete, 2000) == WAIT_TIMEOUT)
@@ -406,12 +456,94 @@ void SenderSocket::Status(LPVOID _param)
         cur = clock();
         s->speed = ((double)(s->base - prevSize) * 8 * (MAX_PKT_SIZE - sizeof(SenderDataHeader)) / ((double)1e6*2));
 
-        printf("[%3.0f] B %6d (%3.1f) N %6d T %d F %d W %d S %.3f Mbps RTT %.3f\n",
+        printf("[%3.0f] B %6d (%5.1f MB) N %6d T %d F %d W %d S %.3f Mbps RTT %.3f\n",
             (double)(cur - start) / CLOCKS_PER_SEC, s->base,
             s->base * MAX_PKT_SIZE / 1e6,
-            s->nextSeq, s->timoutCount, s->rtxCount, 1,
+            s->nextSeq, s->timoutCount, s->rtxCount, s->senderWindow,
             s->speed , s->est);
 
         prevSize = s->base;
     }
+}
+
+void SenderSocket::WorkerRun(LPVOID _param)
+{
+    SenderSocket* s = (SenderSocket*)_param;
+
+    int kernelBuffer = 20e6; // 20 meg
+    if (setsockopt(s->sock, SOL_SOCKET, SO_RCVBUF, (char*)&kernelBuffer, sizeof(int)) == SOCKET_ERROR)
+    {
+        return;
+    }
+    kernelBuffer = 20e6; // 20 meg
+    if (setsockopt(s->sock, SOL_SOCKET, SO_SNDBUF, (char*)&kernelBuffer, sizeof(int)) == SOCKET_ERROR)
+    {
+        return;
+    }
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    WSAEventSelect(s->sock, s->socketReceiveReady, FD_READ);
+
+    s->nextToSend = 0;
+    s->dupCount = 0;
+    bool lastPkt = false;
+
+    //printf("started\n");
+    HANDLE events[] = { s->socketReceiveReady, s->full, s->eventQuit };
+    while (!lastPkt || (lastPkt && (s->base < s->nextToSend)))
+    {
+        if (s->base < s->nextToSend)
+        {
+            s->timeout = ( s->rto) * 3000;
+        }
+        else
+        {
+            s->timeout = INFINITE;
+        }
+
+        int ret = WaitForMultipleObjects(3, events, false, s->timeout);
+        switch (ret) 
+        {
+        case WAIT_TIMEOUT:
+        {
+            
+            s->timoutCount++;
+            printf("--> TIMEOUT BASE: %d, NextTo Send %d\n", s->base, s->nextToSend);
+            sendto(s->sock, (char*)&(s->pending_pkts[s->base % s->senderWindow].sdh), s->pending_pkts[s->base % s->senderWindow].size,
+                0, (sockaddr*)&(s->remote), sizeof(s->remote));
+
+            s->pending_pkts[s->base % s->senderWindow].txTime = clock();
+            break;
+        }
+        case 0:
+        {
+            //printf("got data\n");
+            s->RecvACK();
+            break;
+        }
+        case 1:
+        {
+            printf("--> SEND BASE: %d, NextTo Send %d\n", s->base, s->nextToSend);
+            sendto(s->sock, (char*)&(s->pending_pkts[s->nextToSend % s->senderWindow].sdh), s->pending_pkts[s->nextToSend % s->senderWindow].size,
+                0, (sockaddr*)&(s->remote), sizeof(s->remote));
+            //printf("sent %d\n", s->nextToSend);
+            s->pending_pkts[s->base % s->senderWindow].txTime = clock();
+            WaitForSingleObject(s->mutex, INFINITE);
+            s->nextToSend++;
+            ReleaseMutex(s->mutex);
+            break;
+        }
+        case 2:
+        {
+            lastPkt = true;
+            break;
+        }
+        default:
+        {
+            break;
+        }
+        }
+    }
+    
+    return;
 }
