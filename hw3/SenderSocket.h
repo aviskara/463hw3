@@ -137,6 +137,8 @@ public:
 	HANDLE full;
 	HANDLE complete;
 	HANDLE socketReceiveReady;
+	HANDLE waitClose;
+	HANDLE waitSend;
 
 	~SenderSocket();
 
