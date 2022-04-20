@@ -410,14 +410,14 @@ int SenderSocket::RecvACK()
     }
     else if (y == base) {
         dupCount++;
-        if (dupCount >= 3) {
+        if (dupCount == 3) {
             pending_pkts[base % senderWindow].txTime = clock();
             printf("--> RTX BASE: %d, NextTo Send %d\n", base, nextToSend);
             sendto(sock, (char*)&(pending_pkts[base % senderWindow].sdh), pending_pkts[base % senderWindow].size,
                 0, (sockaddr*)&(remote), sizeof(remote));
             WaitForSingleObject(mutex, INFINITE);
             rtxCount++;
-            dupCount = 0;
+            
             ReleaseMutex(mutex);
         }
     }
