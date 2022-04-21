@@ -140,7 +140,7 @@ int SenderSocket::Send(char* data, int size)
     p->sdh.seq = nextSeq;
     p->type = DATA_TYPE;
     p->size = sizeof(SenderDataHeader) + size;
-    p->txTime = clock();
+    //p->txTime = clock();
     memcpy(p->pkt, data, size);
     nextSeq++;
     ReleaseSemaphore(full, 1, NULL);
@@ -254,7 +254,7 @@ int SenderSocket::RecvSYN()
             //delete [] responseBuf;
 
             lastReleased = min(senderWindow, resp.recvWnd);
-            printf("opening senderWIn %d  resp win %d\n", senderWindow, resp.recvWnd);
+            //printf("opening senderWIn %d  resp win %d\n", senderWindow, resp.recvWnd);
             //system("pause");
             ReleaseSemaphore(empty, lastReleased, NULL);
             mutex = CreateMutex(NULL, 0, NULL);
@@ -381,7 +381,7 @@ int SenderSocket::RecvACK()
     struct ReceiverHeader* resp = (struct ReceiverHeader*)responseBuf;
 
     int y = resp->ackSeq;
-    //printf("<-- RECV BASE: %d, NextTo Send %d, ACK %d  ", base, nextToSend, y);
+    printf("[%.3f] <-- RECV BASE: %d, NextTo Send %d, ACK %d \n ", ((double)clock() - startTimer) / CLOCKS_PER_SEC, base, nextToSend, y);
     if (base != resp->ackSeq)
     {
         //printf("base = %d \tgot ackSeq %d \t next to send %d\n", base, y, nextToSend);
@@ -392,7 +392,8 @@ int SenderSocket::RecvACK()
         WaitForSingleObject(mutex, INFINITE);
         if (dupCount == 0)
         {
-            double tempRTT = (clock() - (double)pending_pkts[(base) % senderWindow].txTime) / CLOCKS_PER_SEC;
+            clock_t t = clock();
+            double tempRTT = ((double)t - (double)pending_pkts[(base) % senderWindow].txTime) / CLOCKS_PER_SEC;
             //printf("packetRTT %f\n", tempRTT);
             //if (tempRTT < (rto * 10)) {
                 rto = CalculateRTO(tempRTT);
@@ -433,10 +434,11 @@ int SenderSocket::RecvACK()
         SetEvent(waitSend);
         ReleaseMutex(mutex);
         if (dupCount == 3) {
-            pending_pkts[base % senderWindow].txTime = clock();
-            //printf("--> RTX BASE: %d, NextTo Send %d\n", base, nextToSend);
+            
+            printf("[%.3f] --> RTX BASE: %d, NextTo Send %d\n", ((double)clock() - startTimer) / CLOCKS_PER_SEC, base, nextToSend);
             sendto(sock, (char*)&(pending_pkts[base % senderWindow].sdh), pending_pkts[base % senderWindow].size,
                 0, (sockaddr*)&(remote), sizeof(remote));
+            pending_pkts[base % senderWindow].txTime = clock();
             WaitForSingleObject(mutex, INFINITE);
             rtxCount++;
             
@@ -516,7 +518,7 @@ void SenderSocket::WorkerRun(LPVOID _param)
     {
         if (s->base < s->nextToSend)
         {
-            s->timeout = ( s->rto) * 10000;
+            s->timeout = ((double)s->rto);
             //printf("timeout %f\n", s->timeout);
             ResetEvent(s->waitClose);
         }
@@ -534,7 +536,7 @@ void SenderSocket::WorkerRun(LPVOID _param)
         {
             
             s->timoutCount++;
-            //printf("--> TIMEOUT BASE: %d, NextTo Send %d timeout %f\n", s->base, s->nextToSend, s->timeout);
+            printf("[%.3f] --> TIMEOUT BASE: %d, NextTo Send %d timeout %f\n", ((double)clock() - s->startTimer) / CLOCKS_PER_SEC, s->base, s->nextToSend, s->rto);
             sendto(s->sock, (char*)&(s->pending_pkts[s->base % s->senderWindow].sdh), s->pending_pkts[s->base % s->senderWindow].size,
                 0, (sockaddr*)&(s->remote), sizeof(s->remote));
 
@@ -549,13 +551,13 @@ void SenderSocket::WorkerRun(LPVOID _param)
         }
         case 1:
         {
-            
-            //printf("--> SEND BASE: %d, NextTo Send %d timeout %f\n", s->base, s->nextToSend, s->timeout);
+            WaitForSingleObject(s->mutex, INFINITE);
+            printf("[%.3f] --> SEND nextToSend: %d, NextTo Send %d timeout %f\n", ((double)clock() - s->startTimer) / CLOCKS_PER_SEC, s->base, s->nextToSend, s->rto);
             sendto(s->sock, (char*)&(s->pending_pkts[s->nextToSend % s->senderWindow].sdh), s->pending_pkts[s->nextToSend % s->senderWindow].size,
                 0, (sockaddr*)&(s->remote), sizeof(s->remote));
             //printf("sent %d\n", s->nextToSend);
-            s->pending_pkts[s->base % s->senderWindow].txTime = clock();
-            WaitForSingleObject(s->mutex, INFINITE);
+            s->pending_pkts[s->nextToSend % s->senderWindow].txTime = clock();
+            
            
             s->nextToSend++;
             ReleaseMutex(s->mutex);
