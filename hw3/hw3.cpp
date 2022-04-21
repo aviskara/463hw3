@@ -21,7 +21,7 @@ int main(int argc, char **argv)
     float forwardLoss = atof(argv[5]);
     float returnLoss = atof(argv[6]);
     float bottleneckSpeed = atof(argv[7]);
-    printf("forwards %f back %f\n", forwardLoss, returnLoss);
+    
 
     printf("Main:\t sender W = %d, RTT %.3f sec, loss %.3e / %.3e, link %.1f Mbps\n", senderWindow, rtt, forwardLoss, returnLoss, bottleneckSpeed);
 

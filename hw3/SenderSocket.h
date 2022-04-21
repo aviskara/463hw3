@@ -140,7 +140,6 @@ public:
 	HANDLE waitClose;
 	HANDLE waitSend;
 
-
 	~SenderSocket();
 
 	int Open(char* _host, int _portNo, int _senderWindow, LinkProperties* _lp);
